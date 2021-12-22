@@ -1,0 +1,1053 @@
+---
+title: "An application of multilevel multiple imputation, mixed-effects logistic regression, and parallel processing using GWTG-HF data:<br><div class='subtitle'> a technical appenidx to <em>Clinical and Socioeconomic Determinants of Angiotensin Receptor Blocker/Neprilysin Inhibitor Prescription at Hospital Discharge in Patients with Heart Failure with Reduced Ejection Fraction</em></div>"
+author: "Jeffrey S Tran" 
+date:  "21 December 2021"
+output: 
+  html_document: 
+    toc: true 
+    toc_float: true
+    number_sections: true
+---
+
+<style type="text/css"> 
+
+h1.title { 
+  font-size: 30px; 
+  text-align: center;
+}
+
+.subtitle {
+  font-size: 20px;
+}
+
+h4.author { 
+  font-size: 18px; 
+  text-align: center;
+}
+
+h4.date { 
+  font-size: 18px; 
+  text-align: center;
+}
+
+h1 { 
+  font-size: 26px;
+}
+
+h2 {
+  font-size: 20px; 
+}
+
+h3 {
+  font-size: 16px; 
+}
+
+h4 {
+  font-size: 14px;
+  font-color: DarkRed;
+}
+
+body {
+  font-size: 12px;
+}
+
+.troubleshooting {
+  font-size: 12px;
+}
+
+</style>
+
+# Introduction 
+
+This document is the technical appendix to our paper "Clinical and Socioeconomic Determinants of Angiotensin Receptor Blocker/Neprilysin Inhibitor Prescription at Hospital Discharge in Patients with Heart Failure with Reduced Ejection Fraction", in which we investigated the impact of clinical and socioeconomic factors on ARNI prescription at discharge. We performed our analyses using the Get with the Guidelines-Heart Failure (GWTG-HF) data set, which provides an incredible wealth of clinical data, but also presents three major challenges: 
+<br> 
+<ul>
+  <li>A high degree of missing data</li>
+  <li>A hierarchical data structure</li> 
+  <li>A large volume of data</li>
+</ul>
+We used multilevel multiple imputation to address missing data and a mixed-effects logistic regression model to address the data's hierarchical structure. We used parallel processing to decrease computational time on large processes amenable to parallelization. 
+<br>
+This document presents the code we used to obtain our final analysis in an extensively annotated format. We discuss not only how we obtained the final model, but also how we set up for large tasks and alternate methods we tried that were unsuccessful. As many of the task run times are prohibitively long, we have provided screenshots of the output rather than allowing the code to run in Rmarkdown. We hope this technical appendix will provide transparency to our analyses, as well as guidance for clinicians and researchers looking to perform similar analyses in the future. And as always, despite our best efforts, we may have made mistakes or overlooked more efficient ways of doing things. We would love to hear from you and share in any discussions, so please contact us at <jeffreytran@email.arizona.edu>!
+<br> 
+
+## About the Data
+
+The GWTG-HF dataset is available upon request to the AHA. An application is required. Proposals can be submitted at www.heart.org/qualityresearch. The R code used to generate our clean data from the raw GWTG-HF can be found in the same GitHub repository as this Rmarkdown file. 
+
+## IT Requirements 
+
+This analysis was performed on the AHA's Precision Medicine Platform (PMP) using an r5.12xlarge AWS EC2 instance. If you are also using the PMP for these kinds of analysis, I recommend discussing your task with IT support, as they may have to remove some of the hidden disconnection timers inherent to the platform as some of these tasks require long run times. Note that the r5.12xlarge instance is a fairly large machine - it has 48 vCPU and 384GiB RAM. While having such a large machine is not necessary, it will greatly decrease the time it takes to complete the task. 
+## Prerequisites  
+
+We assume proficiency with the statistical software R, as well as familiarity with generalized linear models and decision tree analysis. 
+
+## Helpful Resources 
+
+There are a variety of very helpful free online resources available for each of the three topics described above. Here are a few of them that we found the most helpful: 
+<br>
+Multiple Imputation: 
+<ul> 
+  <li>Flexible Impuation of Missing Data by Stef van Buuren (https://stefvanbuuren.name/fimd/)</li>
+  <li>Applied Missing Data Analysis with SPSS and (R)Studio by Heymans & Eekhout (https://bookdown.org/mwheymans/bookmi/)</li>
+  <li>Multiple Imputation in STATA by UCLA IDRE (https://stats.idre.ucla.edu/stata/seminars/mi_in_stata_pt1_new/)</li>
+  <li>miceVignettes by Gerko Vink (https://www.gerkovink.com/miceVignettes/)</li>
+  <li>ASRM Unit 9: Sampling, sample selection, missing data by Mikko Ronkko (https://www.youtube.com/watch?v=jZ897LOEfKM&list=PL6tc6IBlZmOV0LRP_Hihmc0D-JwF6viA4)</li>
+</ul>
+<br>
+Mixed-effects Regression Models: 
+<ul> 
+  <li>Mixed Effects Logistic Regression | R Data Analysis Examples by UCLA IDRE (https://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/)</li>
+  <li>Keep Calm and Learn Multilevel Logistic Modeling: A simplified 3-Step Procedure Using Stata, R, Mplus, and SPSS by Sommet & Morselli (https://www.rips-irsp.com/articles/10.5334/irsp.90/)</li>
+  <li>ASRM Unit 7: Multilevel models by Mikko Ronkko (https://www.youtube.com/playlist?list=PL6tc6IBlZmOVEofGo-Yz4MpdOp5K8yk_T)</li>
+  <li>Random Effects Estimator - an introduction by Ben Lambert (https://www.youtube.com/watch?v=bQampZBzU9Q)</li>
+</ul>
+<br>
+Parallel Processing: 
+<ul>
+  <li>Wrapper function parlMICE by Schouten & Vink (https://www.gerkovink.com/parlMICE/Vignette_parlMICE.html)</li>
+  <li>Parallel Processing in R by Josh Errickson (https://dept.stat.lsa.umich.edu/~jerrick/courses/stat701/notes/parallel.html)</li>
+  <li>How to go parallel in R - basics + tips by Max Gordon (https://gforge.se/2015/02/how-to-go-parallel-in-r-basics-tips/)</li>
+</ul>
+  
+# Getting Started
+
+Start by loading all the packages we'll need into the Rstudio environment, followed by our dataset. 
+
+```{r, message=FALSE}
+library(dplyr)
+library(mice)
+library(miceadds)
+library(broom.mixed)
+library(lme4)
+library(multilevel)
+library(parallel)
+
+load('/mnt/workspace/rstudio_projects/data/gdmt_11.11_clean.RData')
+```
+<ul>
+  <li>dplyr: used for creating new variables and other data manipulation tasks.</li> 
+  <li>MICE: the core library used to implement multiple imputation. It has been documented extensively by Gerko Vink and Stef van Buuren in both case-based and book formats. The source code is publicly available on GitHub.</li>
+  <li>Miceadds: adds useful imputation methods for multilevel multiple imputation models. It also provides an intuitive way to save imputation objects (mids), which can take significant time to produce.</li>
+  <li>Broom.mixed: necessary for MICE.</li>
+  <li>lme4: initially used to determine whether or not a hierarchical data structure is present and is later used as the core library used to build our mixed model.</li> 
+  <li>Multilevel: used to determine hierarchical data structure.</li>
+  <li>Parallel: used to split the analysis task into parallel for the model fitting step.</li>
+</ul>
+
+Let's explore our data a little bit: 
+```{r}
+str(df)
+```
+
+## Data Dictionary
+
+SITE_ID: identifier for the hospital submitting the record of hospitalization. <br>
+GDMT_HFBB: Was the patient prescribed a guideline-directed medical therapy (GDMT)-recommended beta blocker at discharge from the hospital? '0' denotes 'no', '1' denotes 'yes' <br> 
+GDMT_ACEIARB: Was the patient prescribed an angiotensin converting enzyme inhibitor (ACEI) or angiotensin receptor blocker (ARB) at discharge from the hospital? '0' denotes 'no', '1' denotes 'yes' <br> 
+GDMT_ARNI: Was the patient prescribed an angiotensin receptor blocker - neprilysin inhibitor (ARNI) at discharge from the hospital? '0' denotes 'no', '1' denotes 'yes' <br> 
+GDMT_MRA: Was the patient prescribed an mineralocorticoid receptor antagonist (MRA) at discharge from the hospital? '0' denotes 'no', '1' denotes 'yes' <br> 
+GDMT_BBcontra: Does the patient have a contraindication to beta blockers? '0' denotes 'no', '1' denotes 'yes' <br> GDMT_RAASIcontra: Does the patient have a contraindication to an ACEI or ARB? '0' denotes 'no', '1' denotes 'yes' <br> 
+GDMT_MRAcontra: Does the patient have a contraindication to an MRA? '0' denotes 'no', '1' denotes 'yes' <br> 
+GDMT_ARNIcontra: Does the patient have a contraindication to an ARNI? '0' denotes 'no', '1' denotes 'yes' <br> 
+GENDERi: Biological sex of the patient. '0' denotes 'male', '1' denotes 'female' <br> 
+race2i: Site-reported race of the patient. '1' denotes 'Asian', '2' denotes 'Black', '3' denotes Hispanic', '4' denotes 'Other or unable to determine', '5' denotes 'White' <br> 
+insurance: Patient's insurance type: '1' denotes 'Medicaid', '2' denotes 'Medicare', '3' denotes 'No Insurance', '4' denotes 'Other', 'NA' denotes missing <br> 
+AGEi: Age of patient at time of discharge. <br>
+PMHx_none: Did the patient have no prior medical history at time of admission to the hospital? '0' denotes 'no', '1' denotes 'yes' <br> 
+PMHx_CHF: Did the patient have a prior medical history of congestive heart failure? '0' denotes 'no', '1' denotes 'yes' <br> 
+PMHx_ESRD: Did the patient have a prior medical history of end stage renal disease (ESRD)? '0' denotes 'no', '1' denotes 'yes' <br> 
+PMHx_Cr2: Did the patient have a prior medical history of have chronic kidney disease (CKD)? the GWTG-HF dataset defines CKD based on a serum creatinine level of >2. '0' denotes 'no', '1' denotes 'yes' <br> 
+PMHx_PPMICDCRTD: Did the patient have a permanent pacemaker (PPM), implantable cardioverter defibrillator (ICD), or cardiac resynchronization therapy defibrillator (CRTD) prior to admission to the hospital? '0' denotes 'no', '1' denotes 'yes' <br> 
+PMHx_fibfl: Did the patient have a prior medical history of atrial fibrillation or flutter? '0' denotes 'no', '1' denotes 'yes' <br> 
+GH_HEART_TRANSPLANTS: Site-level variable indicating if the site performs heart transplants. '0' denotes 'no', '1' denotes 'yes' <br> 
+RESIDENTS: Site-level variable indicating if postgraduate resident physicians work at the site. '0' denotes 'no', '1' denotes 'yes' <br> 
+OH_EF: the patient's ejection fraction. <br> 
+OH_TRANSPLANT: Is the patient listed for heart transplant? '0' denotes 'no', '1' denotes 'yes' <br> 
+covar_ino: Did the patient receive an inotrope (dopamine, dobutamine, milrinone) during hospitalization? '0' denotes 'no', '1' denotes 'yes' <br> 
+inhospRx_BB: Did the patient receive a beta blocker while hospitalized? '0' denotes 'no', '1' denotes 'yes' <br> 
+inhospRx_MRA: Did the patient receive an MRA while hospitalized? '0' denotes 'no', '1' denotes 'yes' <br> 
+inhospRx_none: Did the patient receive no GDMT components while hospitalized? '0' denotes 'no', '1' denotes 'yes' <br> 
+inhospRx_ARNI: Did the patient receive an ARNI while hospitalized? '0' denotes 'no', '1' denotes 'yes' <br> 
+inhospRx_ACEIARB: Did the patient receive an ACEi or ARB while hospitalized? '0' denotes 'no', '1' denotes 'yes' <br> 
+covar_Kdisc: the patient's serum potassium at discharge. <br>
+covar_Crdisc: the patient's serum creatinine at discharge. <br>
+OH_DISCBPSYST: the patient's systolic blood pressure at discharge. <br> 
+OH_DISCHR: the patient's heart rate at discharge. <br> 
+zip_designation: merged from the distressed community index (DCI) dataset; denotes the community type. '1' denotes 'rural', '2' denotes 'small town', '3' denotes 'suburban', '4' denotes 'urban', 'NA' denotes missing data <br> 
+population_total: merged from the DCI dataset; denotes the population count of the associated zip code. <br> 
+covar_OutsideZIPregion: Does the patient's zip code differ from the site's zip code? '0' denotes 'no', '1' denotes 'yes' <br> 
+followup: Was the patient given follow up on discharge? '0' denotes 'no', '1' denotes 'yes' <br> 
+OH_ARNI: Had the patient been prescribed an ARNI prior to admission to the hospital? '0' denotes 'no', '1' denotes 'yes' <br> 
+DCtoContCare: Was the patient discharged to a skilled nursing facility, long term acute care facility, inpatient rehabilitation, intermediate care facility, home health care, or other acute care facility? '0' denotes 'no', '1' denotes 'yes' <br> 
+
+# Understanding Data from the Missingness Perspective 
+
+Before starting, I highly recommend reading Stef van Buuren's free online book Flexible Imputation of Missing Data. He provides both a theoretical understanding of multiple imputation and a comprehensive guide of how the procedure is properly performed. He is also the primary contributor to the R library MICE, which is the core library we will be using to perform multiple imputation. 
+
+## Exploring missingness patterns
+```{r}
+#how many missing in each variable? 
+lapply(df, function(x) 
+       sum(is.na(x))
+       )
+
+#how many complete cases? 
+sum(complete.cases(df))
+```
+Note that missingness ranges from 0 to 70%. To understand how this missingness will impact our statistical analysis, we need to understand the mechanism of missingness. Data that are "missing completely at random" (MCAR) are frequently amenable to "simple" fixes such as complete case analysis (also known as listwise deletion). Data that are "missing at random" (MAR) are amenable to multiple imputation in most cases, or univariate imputation if the data is monotone. Data that are "missing not at random" (MNAR) present the most complex scenario and frequently require additional research into the cause of data missingness. Blindly imputing MNAR data can result in inaccurate estimates in the final model. 
+<br>
+MICE has several built-in methods for diagnosing the mechanism of missingness, but due to the size of the GWTG-HF dataset, the visual assessments are not practical. 
+```{r, eval=FALSE}
+#what is the pattern of data missingness? 
+md.pattern(df, plot=FALSE)
+```
+The output from the above code is a large matrix that is cumbersome to read. The first column indicates the number of observations with that pattern of missingness, the subsequent columns indicate if the associated variable is missing or not, and the final column shows the number of variables that are missing for that particular pattern. Because there are 40 variables and over 1500 patterns of missingness, this matrix is rather large, but is nevertheless worth reviewing in detail. After review, the data appear to be MAR, and the missingess pattern is not monotone. In addition, we can surmise that missingness happens at a systemic level, with some sites simply not reporting entire groups of variables, such as patients' medical comorbidities, their discharge labs/vitals, etc. Such a pattern is amenable to multiple imputation.
+
+## Exploring multilevel data structures
+
+When interpreting data in the context of missingness, we also need to consider if the data has a multilevel structure (also referred to as hierarchical or clustered data). We know that patients are nested within hospitals, and it's reasonable to suspect that culture, resources, and other unobserved variables at each site are associated with the characteristics of the patients they treat. We can assess this quantitatively by looking at the intraclass correlation coefficient (ICC) for incomplete variables.
+
+```{r, results='hide'}
+#Find the variables with missing data and split the variable names 
+#into lists based on class (factor vs numeric)
+
+varlist <- colnames(df)
+hasmiss <- list() 
+miss_f <- list() 
+miss_n <- list() 
+
+for(i in 1:ncol(df)) { 
+        if(with(df,sum(is.na(eval(as.name(varlist[i]))))) > 0) {
+                hasmiss <- append(hasmiss, varlist[i])
+        }
+}
+
+for(i in 1:length(hasmiss)) { 
+        if (with(df,class(eval(as.name(hasmiss[[i]])))) == "factor") {
+                miss_f <- append(miss_f, hasmiss[i])
+        } else {
+                miss_n <- append(miss_n, hasmiss[i])
+        }
+}
+
+rm(varlist, hasmiss)
+```
+
+```{r}
+#calculate the ICC for each variable. Note the models used to calculate ICC are dependent 
+#on the dependent variable's class (ANOVA for numeric variables, unconditional mean model 
+#for factor variables)
+
+fun_f <- function(i) {
+        
+        m0 <- glmer(eval(as.name(i)) ~ (1|SITE_ID),
+                    data=df,
+                    family='binomial',
+                    control=glmerControl(optimizer='bobyqa', optCtrl=list(maxfun=2e5)))
+        
+        ICC <- m0@theta[1]^2/(m0@theta[1]^2 + (3.14159^2/3))
+        
+        print(i)
+        print(ICC)
+}
+
+fun_n <- function(i) {
+        
+        ICC <- multilevel::ICC1(aov(eval(as.name(i)) ~ SITE_ID, data=df))
+        
+        print(i)
+        print(ICC)
+}
+
+suppress <- lapply(miss_f, fun_f)
+suppress <- lapply(miss_n, fun_n)
+
+rm(miss_n, miss_f, fun_n, fun_f, suppress)
+```
+There is no cutoff for a "significant" ICC, but we see that SITE_ID alone explains more than 30% of the variance seen in many of the variables to be imputed; hence, clustering cannot be ignored. 
+<br> 
+To summarize what we have learned about our data up to this point:
+<ul> 
+  <li>The data seems to missing at random (MAR)</li>
+  <li>Missingness is not monotone</li>
+  <li>The data has a hierarchical structure with patients nested within sites</li>
+</ul> 
+Any imputation technique we apply our data to needs to account for these three factors. Because the data is MAR and not monotone, multiple imputation arises as an attractive option for imputation. Because the data is hierarchical we will need to apply a multilevel multiple imputation model.
+
+# Multilevel Multiple Imputation via Fully Conditional Specification
+
+We will implement our multilevel multiple imputation model via fully conditional specification (FCS). Stef van Buuren's book comprehensively explains the theory and basic steps for this procedure, while the vignette on multilevel imputation by Gerko Vink provides a nice walk through via examples. We adapt many techniques and terminology from these two sources.
+<br>
+Very broadly speaking, multiple imputation can be broken down into 3 steps, and these steps provide a nice outline for how we will approach the procedure. The steps are as follows:  
+<ol>
+  <li>The imputation step:<br>
+      We use either fully conditional specification (FCS) or joint modeling to estimate a distribution of missing values (we are NOT imputing point values). Random draws from that distribution are imputed into the missing value slots and this process is repeated multiple times to create multiple datasets with imputed values. The variance between the imputed values of different datasets reflects our uncertainty regarding the true value of the missing data point. Each dataset with imputed values is referred to as an imputation. <br>
+      In FCS the distribution of missing values is created via a series of models, with each independent variable with missingness requiring its own model. The independent variable with missingess becomes the dependent variable for that imputation model. For example, we saw previously that the variable GDMT_BBcontra has 25,857 missing values. We will create a model with GDMT_BBcontra as the dependent variable, and use this model to estimate the distribution of missing values for GDMT_BBcontra. Note that the ICC for this model was 0.360 so the imputation model will need to take this clustering into account.</li>
+  <li>The fitting step:<br>
+      We create a model to test our hypothesis, which in our case is testing if a patient is prescribed an ARNI at hospital discharge (GDMT_ARNI). Keep in mind that we may have to take a hierarchical data structure into account. This model is applied to every one of the imputed datasets generated in the imputation step.</li>
+  <li>The pooling step:<br> 
+      We pool the results of each of the previously fitted models using Rubin's rules to generate a final model.</li>
+</ol>
+<br>
+
+## Mulitiple Imputation using GLM-based Imputation Methods (unsuccessful)
+
+In this section we describe how we implemented FCS using generalized linear models (GLMs). The imputation model did not converge, so this approach was ultimately abandoned. Nevertheless, we present this approach because multiple imputation is commonly applied via GLMs.
+
+### Selecting imputation methods
+
+The first task of the imputation step is to specify the kind of statistical model we are going to use to predict each of our independent variables with missingness. In MICE, this is referred to as choosing the imputation method. This is largely going to depend on the class of that variable (numeric vs factor/binary vs factor/nominal vs factor/ordinal), but it is also determined by the presence of a hierarchical data structure. The presence of clustering in our data greatly complicates multiple imputation, but luckily the MICE library comes with several imputation methods specifically for hierarchical data with 2 levels. These methods typically start with the prefix "2l."
+<br>
+Note that there are no 2l methods for ordinal or nominal outcomes. In our case this caused a problem for the variables 'insurance' and 'zip_designation.' Our work around was to create binary variables based on these nominal variables and impute the binary version instead. We retained as much information as possible by continuing to use nominal form of these variables as dependent variables in other imputation models. For the nominal variable 'zip_designation' creating a binary derivative was not possible, so it had to be dropped entirely from analysis.
+<br> 
+Here we convert the nominal variable 'insurance' to a binary variable. 
+
+```{r}
+#convert nominal variables to binary 
+df <- df %>% 
+  mutate(insured = ifelse(insurance %in% 'Medicaid' | 
+                          insurance %in% 'Medicare' | 
+                          insurance %in% 'Other', 1,  
+                   ifelse(insurance %in% 'none', 0, 
+                   ifelse(is.na(insurance), NA, 999))))
+df$insured <- as.factor(df$insured)
+```
+
+Next we set the cluster variable, which in our case is SITE_ID. Interestingly, MICE requires that cluster variables be changed to numeric class. 
+
+```{r}
+#set the cluster variable (note the cluster var must be numeric)
+df$SITE_ID <- as.numeric(df$SITE_ID)
+cluster_var=df$SITE_ID
+```
+
+Next we create a vector containing all of the dataset's variable names. We will assign an imputation method to each of these variable names in the next step. 
+
+```{r} 
+impmethod <- character(ncol(df))
+names(impmethod) <- colnames(df)
+```
+
+We are finally ready to assign our imputation methods and we do so primarily based on that variable's class. We arbitrarily chose an ICC < 0.05 as representing a negligible clustering effect, and this allows us to use a non-2l imputation method for variables that meet this criteria. This is desirable because all 2l methods call glmer() and assign the cluster variable a random intercept, which becomes computationally expensive for the complex models we use for imputation.  
+
+```{r}
+
+impmethod['SITE_ID'] <- "" 
+
+impmethod['GDMT_HFBB'] <- "2l.binary" 
+impmethod['GDMT_ACEIARB'] <- "2l.binary" 
+impmethod['GDMT_ARNI'] <- "" 
+impmethod['GDMT_MRA'] <- "2l.binary"
+
+impmethod['GDMT_BBcontra'] <- "2l.binary"
+impmethod['GDMT_RAASIcontra'] <- "2l.binary"
+impmethod['GDMT_MRAcontra'] <- "2l.binary" 
+impmethod['GDMT_ARNIcontra'] <- "2l.binary" 
+
+impmethod['GENDERi'] <- "logreg" 
+impmethod['race2i'] <- ""
+impmethod['insurance'] <- ""
+impmethod['AGEi'] <- ""
+
+impmethod['PMHx_none'] <- "2l.binary" 
+impmethod['PMHx_CHF'] <- "2l.binary" 
+impmethod['PMHx_ESRD'] <- "2l.binary"
+impmethod['PMHx_Cr2'] <- "2l.glm.bin"
+impmethod['PMHx_PPMICDCRT'] <- "2l.binary"
+impmethod['PMHx_fibfl'] <- "logreg"
+
+impmethod['GH_HEART_TRANSPLANTS'] <- ""
+impmethod['RESIDENTS'] <- ""
+
+impmethod['OH_EF'] <- ""
+impmethod['OH_TRANSPLANT'] <- ""
+impmethod['covar_ino'] <- ""
+
+impmethod['inhospRx_BB'] <- "2l.binary"
+impmethod['inhospRx_MRA'] <- "2l.binary"
+impmethod['inhospRx_none'] <- "2l.binary"
+impmethod['inhospRx_ARNI'] <- "2l.binary"
+impmethod['inhospRx_ACEIARB'] <- "2l.binary"
+
+impmethod['covar_Kdisc'] <- "pmm"
+impmethod['covar_Crdisc'] <- "pmm"
+impmethod['OH_DISCBPSYST'] <- "pmm"
+impmethod['OH_DISCHR'] <- "pmm"
+
+impmethod['zip_designation'] <- ""
+impmethod['population_total'] <- "2l.pmm"
+impmethod['distress_score'] <- "2l.pmm"
+
+impmethod['covar_OutsideZIPregion'] <- "2l.binary"
+impmethod['followup'] <- "2l.binary"
+impmethod['DCtoContCare'] <- "2l.binary"
+impmethod['insured'] <- "2l.binary"
+
+print(impmethod)
+```
+
+The default imputation method for each variable is "", which indicates to MICE that an imputation model should not be fit to that variable. We explicitly assigned "" where appropriate to make sure that we considered every variable in the dataset, but an explicit assignment was not necessary. Notice that variables might be assigned "" because they have no missing values or because they are nominal. There is value in keeping nominal variables in the dataset because they can still be used to impute other variables, even though they themselves cannot be imputed. 
+
+### Specifying the predictor matrix
+
+The next step is to determine which variables belong in each imputation model. This is done through the prediction matrix, which is created via the following: 
+
+```{r}
+pm <- make.predictorMatrix(df)
+print(pm)
+```
+
+Each row is an imputation model with the first column of each row indicating the variable to be imputed. The columns are potential independent variables to be included in that imputation model. 0's indicate the variable in that column will be excluded from the imputation model, while 1 indicates the variable be assigned a fixed effect. Note that 0's are automatically assigned to the matrix diagonal as variables should not be used to impute themselves. Similarly, note that every other variable has been assigned a fixed effect ("1") by default. 
+<br>
+As a general rule, every variable that is going to be used in the final model needs to be included in the imputation model. The only time to definitely exclude a variable is if it is collinear with another variable. This will definitely occur for "insured", the binary variable we generated from nominal variable "insurance" a few steps ago. Hence, we need to remove "insurance" from the imputation model for "insured". Similarly "insurance" provides more information than "insured" so we use "insurance" as an independent variable in all other imputation models instead of "insured". We can arrange this via the following: 
+
+```{r}
+pm['insured','insurance'] <- 0
+pm[,'insured'] <- 0
+```
+
+Outside of variables that induce collinearity, we usually want to include as much data as possible when creating imputation models, even if that variable is not going to be used in your final model. You may need to exclude variables from imputation models when the imputation models have become exceedingly complex, but the GTWG-HF dataset is sufficiently large that this is not necessarily. If your dataset is not large, remember to include all variables in the imputation models that you plan to include in your final model. 
+<br> 
+The final set up required before initiating imputation is to set the cluster variable within the predictor matrix. This is done by assigning the cluster variable a value of -2 in all imputation models. The second line here is redundant because we are not imputing the cluster variable (SITE_ID had no missing), but if your data is missing at the cluster level, make sure to set the diagonal back to 0. 
+
+```{r}
+pm[,'SITE_ID'] <- -2
+pm['SITE_ID','SITE_ID'] <- 0
+```
+
+### Do a test run of your imputation model
+
+We've now done all the set up required for multiple imputation, but these tasks can be quite computationally expensive, so it's helpful to perform a test case first. MICE captures many errors as warnings so it can run to completion, so we don't want the task to run for a week only for us to discover the imputation model has failed at a critical step and makes the model unusable.<br>
+As a test run, I set the number of imputations (m) to 1 and the number of iterations (maxit) to 2.
+Verbose will allow us to see where we are in the computation process. Control1 and control2 are options for glmer() (for hierchical models) and lmer() (for non-hierarchical models), respectively. Setting glmer() and lmer() parameters can help reduce run time. Most importantly, make sure to specify nAGQ=0; this will reduce the accuracy of estimates, but will greatly reduce run time. It is inadvisable to set nAGQ to 0 for the actual model, but isn't a problem for our test run. Finally, we have the computer keep track of how long it takes the process to run using Sys.time(). 
+
+```{r, eval=FALSE}
+start_time <- Sys.time() 
+test <- mice(df, m=1,maxit=2, 
+             predictorMatrix=pm, method=impmethod, cluster_var=cluster_var, 
+             nAGQ=0, seed=88, verbose=2,
+             control1=glmerControl(optimizer='bobyqa', optCtrl=list(maxfun=2e5), calc.derivs=TRUE),
+             control2=lmerControl(optimizer='nloptwrap', optCtrl=list(maxfun=2e5)))
+end_time <- Sys.time() 
+end_time - start_time
+```
+
+This will produce a mids object, which will contain the set of datasets containing your imputed values. Since this is a test run and we set m=1, the mids object 'test' will only contain 1 dataset. We can check to see if our model produces estimates by looking at the trace plots. 
+
+```{r, eval=FALSE}
+plot(test)
+```
+
+We have provided some screen shots of a few of the plots. At minimum make sure the plots are not stationary for at least each kind of imputation method you've used. Plot() gives you the traces for all of the imputation models we've run, but we only show a few plots below: 
+
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/test-run/convergence-t1.png)
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/test-run/convergence-t8.png)
+<br>
+There are no traces with a slope of 0 (referred to as flat line behavior; see below under the next troubleshooting section for examples of flatline behavior). Flat line behavior indicates the model has failed to produce anything and imputes stationary values. 
+
+We won't know if the imputations are reasonable until we create the full model. However, the above task took >2 hours for a single imputation with only 2 iterations with nAGQ set to 0. Our full model will require at least 45 imputations with >10 iterations- this could take weeks. To shorten our computational time, we can use parallel processing. 
+
+#### Troubleshooting: Flatline trace plots {#troubleshooting}
+When we were first setting up the task, our trace plots revealed flat line behavior. Flatline behavior looks like this:<br>
+
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/flatline-traceplots/flatline-trace-01.png)
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/flatline-traceplots/flatline-trace-02.png)
+
+Unfortunately the warning gave limited information: "lmer does not run. Simplify imputation model". I found three at least 3 sources of this flat line behavior, though there are likely more: 
+<ol>
+  <li>Factor variables have levels with special characters: <br>
+  Plot appearance: only the trace plots of factor variables show flat line behavior<br> 
+  Problem: MICE internally creates formulas for the GLMs underlying its imputation methods. It explicitly declares dummy variables in this formula, and dummy variables names are based on level names. If the level names have special characters (spaces, periods, etc), these special characters will be incorporated into the formula and cause the model building step to fail.<br> 
+  Fix: Go through all categorical variables carefully and remove special characters from level names (in R, it is good data management practice to not use special characters in the first place, but this may be new to users who routinely use other statistical programming software that leverage value labels</li>
+  <li>There is only one observation in at least one of your clusters: <br>
+  Plot appearance: all of your trace plots show flat line behavior<br>
+  Problem: This is only an issue with older versions of MICE. 2lmer imputation methods fail if at least one cluster has n<2 observations.<br> 
+  Fix: use MICE version > 3.13.6. The authors of MICE are aware of this issue and implemented a fix. By the time you're reading this, this fix has likely been incorporated into the latest stable version of MICE, but if it hasn't, install newer versions using devtools.</li>
+  <li>The model is too complex to run: <br>
+  Plot appearance: Depends. If you have specified a different model for each imputation method, only the more complex models may have flat line behavior. If you have used the same complex imputation model for each method, all the trace plots will be flat. <br>
+  Problem: Your imputation model is too complex and blows up. Unfortunately (or fortunately) mice automates a lot of complex modeling, so many of the diagnostics used to validate models cannot be performed, and warnings are captured so mice can run to completion.<br>
+  Fix: Run the GLM outside of MICE. Go to the source code for MICE (https://github.com/amices/mice/tree/master/R) and find the imputation methods you are using for your imputation model (eg mice.impute.2l.bin.R, mice.impute.2l.lmer.R, etc). In the source code files, mice stores this model in the local variable "fit", which you can find in page using your browser's Find tool. This will give you the parameters mice uses to generate your models. Set these models up outside of MICE using the same parameters specified in the source code, and you can then run diagnostics on each model.</li>
+
+![](/mnt/workspace/rstudio_projects/console_scrn_shots/scrnshot_mice-sourecode1.png)
+![](/mnt/workspace/rstudio_projects/console_scrn_shots/scrnshot_mice-sourecode2.png)
+![](/mnt/workspace/rstudio_projects/console_scrn_shots/scrnshot_mice-sourecode3.png)
+
+### Multiple Imputation in Parallel
+
+R is single-threaded, meaning it will only use a single core for processing tasks, no matter how time consuming this might be. Luckily, the imputations performed by MICE are independent of each other, so each imputation can be assigned to a different core in our machine and the datasets can be combined into a single mids object at that the end. This has been written into MICE using the wrapper function parlMICE(). 
+<br> 
+The number of imputations performed (equivalent to "m" in the non-parallel version of mice()) is equal to n.core * n.imp.core. We aimed to produce imputations at least 1-1.5x the degree of missingness in the dataset, which was about 40 imputations in our case. In general, you should use no more than n-1 of the cores on your machine or you'll risk being unable to do anything else while the task is running. Our machine had 48 cores, so we set n.core=46.
+<br>
+We specified that each core only run 1 imputation as we wanted to reduce run time as much as possible, but if your machine has fewer cores than the number of imputations you want to run, you can increase the n.imp.core parameter at the cost of increasing your run time. 
+<br>
+Maxit indicates the number of iterations each imputation model is allowed to run, and frequently 20-30 iterations are necessary for the model to converge (which we will discuss in the next section). Based on our test cases we estimated the task would already take a week with just 10 iterations so our maxit parameter is set much lower. 
+<br>
+Cluster type (cl.type) is going to depend on the operating system of your machine. If you are using Windows, you will specify PSOCK, whereas on Linux machines, FORK is preferable. 
+
+```{r, eval=FALSE}
+start_time <- Sys.time() 
+print(start_time)
+impobj <- parlmice(df, n.core=46, n.imp.core = 1, cl.type="FORK",
+                   maxit=11, predictorMatrix=pm, method=impmethod,
+                   cluster_var=cluster_var, 
+                   nAGQ=0, cluster.seed=88, 
+                   control1=glmerControl(optimizer='bobyqa', optCtrl=list(maxfun=2e5), calc.derivs=TRUE),
+                   control2=lmerControl(optimizer='nloptwrap', optCtrl=list(maxfun=2e5)))
+end_time <- Sys.time() 
+end_time - start_time
+```
+
+The run time for the task above was 9.3 days, even with our large machine. We used plot() to generate trace plots to assess whether the algorithm had converged after 10 iterations. Here are some example screen shots of the output. 
+<br>
+<br>
+Trace plots for GLM-based imputation methods 
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence01.png) 
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence02.png) 
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence03.png) 
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence04.png)
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence05.png)
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence06.png)
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence07.png)
+
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence08.png)
+![](/mnt/workspace/rstudio_projects/data/impdir_diagnostics/convergence09.png)
+
+The mixing is quite poor and the traces show no sign of converging for any imputation models using the 2l.binary method. The trace plot for PMHx_Cr2 exhibits flat line behavior. The imputation models for 2l.pmm (population_total, distress_score), pmm (OH_DISCBPSYST, OH_DISCHR, etc), and logreg (GENDERi, etc) methods seem to converge without issue, which suggest the problem is isolated to the 2l.binary method. 
+<br>
+Based on this pattern, we were concerned that the underlying GLMs were not estimated appropriately. The next step in trouble shooting would have been to take the GLMs out of MICE and run diagonstics on them to assess the problem, but at this point we decided to move away from imputation models based on GLMs. We did so primarily because the run time for the imputation model was prohibitively long for our machine and the model did a poor job of handling categorical variables with more than 2 levels. 
+
+## Mulitiple Imputation using Random Forest 
+
+Random forest is a type of decision tree analysis. It has been found to be a useful in multiple imputation and can be applied to hierarchical data structures without extra effort. In our case, we simply include the cluster variable in the imputation model without further manipulation. One thing to note is that for random forest, we can keep the cluster variable as a categorical variable instead of converting it into a numeric variable, as we had to do for the GLM based methods. 
+<br>
+We used the following code to set up our imputation methods and predictor matrix: 
+
+```{r, eval=FALSE}
+impmethod <- character(ncol(df))
+names(impmethod) <- colnames(df)
+print("imputation vector created")
+
+impmethod['SITE_ID'] <- "" 
+impmethod['GDMT_HFBB'] <- "rf" 
+impmethod['GDMT_ACEIARB'] <- "rf" 
+impmethod['GDMT_ARNI'] <- "" 
+impmethod['GDMT_MRA'] <- "rf"
+
+impmethod['GDMT_BBcontra'] <- "rf"
+impmethod['GDMT_RAASIcontra'] <- "rf"
+impmethod['GDMT_MRAcontra'] <- "rf" 
+impmethod['GDMT_ARNIcontra'] <- "rf" 
+impmethod['OH_ARNI'] <- "rf"
+
+impmethod['GENDERi'] <- "rf" 
+impmethod['race2i'] <- ""
+impmethod['insurance'] <- "rf"
+impmethod['AGEi'] <- ""
+
+impmethod['PMHx_none'] <- "rf" 
+impmethod['PMHx_CHF'] <- "rf" 
+impmethod['PMHx_ESRD'] <- "rf"
+impmethod['PMHx_Cr2'] <- "rf"
+impmethod['PMHx_PPMICDCRT'] <- "rf"
+impmethod['PMHx_fibfl'] <- "rf"
+
+impmethod['GH_HEART_TRANSPLANTS'] <- ""
+impmethod['RESIDENTS'] <- ""
+impmethod['OH_EF'] <- ""
+impmethod['OH_TRANSPLANT'] <- ""
+impmethod['covar_ino'] <- ""
+
+impmethod['inhospRx_BB'] <- "rf"
+impmethod['inhospRx_MRA'] <- "rf"
+impmethod['inhospRx_none'] <- "rf"
+impmethod['inhospRx_ARNI'] <- "rf"
+impmethod['inhospRx_ACEIARB'] <- "rf"
+
+impmethod['covar_Kdisc'] <- "pmm"
+impmethod['covar_Crdisc'] <- "pmm"
+impmethod['OH_DISCBPSYST'] <- "pmm"
+impmethod['OH_DISCHR'] <- "pmm"
+
+impmethod['zip_designation'] <- "rf"
+impmethod['population_total'] <- "pmm"
+impmethod['distress_score'] <- "pmm"
+impmethod['covar_OutsideZIPregion'] <- "rf"
+impmethod['followup'] <- "rf"
+impmethod['DCtoContCare'] <- "rf"
+```
+
+We used the imputation method pmm instead of 2l.pmm for continuous variables when simultaneously using the rf method for categorical methods. As mentioned previously, 2l.pmm requires that we change the class of the cluster variable (SITE_ID in our case) to numeric. But for random forest to handle cluster variables, the cluster variable's class must be factor. 
+<br> 
+We handled this issue by assigning the cluster variable a fixed effect rather than a random effect for the imputation models using the pmm method. This was possible because we had a proportionately large sample (136,000 observations to ~550 sites); however in many cases assigning the cluster variable a fixed effect isn't practical because this will consume all the degrees of freedom. If assigning the cluster variable a fixed effect is not possible, 2l.pmm must be used as an imputation method, but this will cause a problem with the cluster variable class. A potential work around would be to duplicate the cluster variable, with one version being kept as a factor variable and the duplicated version converted to numeric class. For the imputation models using the random forest method, use the factor version of the cluster variable and set the numeric cluster variable to 0 in the predictor matrix. For imputation models assigning the cluster variable a random effect (eg 2l.pmm), use the numeric version of the cluster variable and set the factor version to 0 in the predictor matrix. 
+<br> 
+Again, we opted to assign the cluster variable a fixed effect, so our predictor matrix was as follows: 
+
+```{r, eval=FALSE}
+pm <- mice::make.predictorMatrix(df)
+
+#set the SITE_ID as the cluster var 
+pm[,'SITE_ID'] <- 1
+pm['SITE_ID','SITE_ID'] <- 0
+
+pm['SITE_ID',] <- 0
+pm['GDMT_ARNI',] <- 0
+pm['race2i',] <- 0
+pm['AGEi',] <- 0
+pm['GH_HEART_TRANSPLANTS',] <- 0
+pm['RESIDENTS',] <- 0
+pm['OH_EF',] <- 0
+pm['OH_TRANSPLANT',] <- 0
+pm['covar_ino',] <- 0
+```
+
+This code is only necessary if we do not choose to re-create the predictor matrix. We share this code here to demonstrate our thought process. We assigned SITE_ID (our cluster variable) a value of 1, thereby having both the pmm and rf imputation models assign SITE_ID a fixed effect. All the rows we manually set to 0 had no imputation method assigned, so no imputation model would be generated anyways. 
+<br> 
+Now we set up a test run of the task to make sure there is no flat line behavior. 
+
+```{r, eval=FALSE}
+start_time <- Sys.time()
+print(start_time)
+test_rf <- mice(df, m=2, maxit=2,
+                predictorMatrix=pm, method=impmethod,
+                cluster.seed=88,
+                verbose=2,
+                ntree= 15,
+                control=lmerControl(optimizer='bobyqa', optCtrl=list(maxfun=2e5), calc.derivs=TRUE))
+end_time <- Sys.time()
+end_time - start_time
+```
+
+Notice that there is no glmercontrol() argument as there are no mixed models are used in this imputation model. We then use plot() to make sure there is no flat line behavior
+
+```{r, eval=FALSE}
+plot(test_rf)
+```
+
+We display a sample of the test trace plots below, making sure to include plots using the rf and pmm methods: 
+
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/test-run/convergence-t01.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/test-run/convergence-t09.png)
+<br>
+It seems there's no flat line behavior, so we set up and run the task in parallel. 
+
+```{r, eval=FALSE}
+start_time <- Sys.time() 
+print(start_time)
+imp_rf2 <- parlmice(df, n.core=30, n.imp.core = 1, cl.type="FORK",
+                maxit=15, cluster.seed=88,
+                predictorMatrix=pm, method=impmethod,
+                ntree = 15, 
+                verbose=2,
+                control=lmerControl(optimizer='bobyqa', optCtrl=list(maxfun=2e5), calc.derivs=TRUE))
+end_time <- Sys.time() 
+end_time - start_time 
+
+write.mice.imputation(mi.res=imp_rf2, name="imp_rf2", mids2spss = FALSE)
+```
+
+The last line saves the mids output object of parlice(). This is very helpful for mice() objects that take a long time to generate. We then check convergence as follows: 
+
+```{r, eval=FALSE}
+plot(imp_rf2)
+```
+
+<br>
+Trace plot examples for rf-based imputation methods
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-01.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-02.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-03.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-04.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-05.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-06.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-07.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-08.png)
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/convergence-plot-09.png)
+<br>
+The trace plots have good mixing and appear to converge. The next step is to assess whether the imputations make sense. This is best done via density plots. We don't expect the density plots to be identical to the distribution of the known data, but in general they should be similar. 
+
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ GDMT_HFBB) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-GDMT_HFBB.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ GDMT_ACEIARB) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-GDMT_ACEIARB.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ GDMT_MRA) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-GDMT_MRA.png)
+
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ GDMT_BBcontra) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-GDMT_BBcontra.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ GDMT_RAASIcontra) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-GDMT_RAASIcontra.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ GDMT_MRAcontra)  
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-GDMT_MRAcontra.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ GDMT_ARNIcontra) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-GDMT_ARNIcontra.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ GENDERi)
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-GENDERi.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ insurance)
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-insurance.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ PMHx_none) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-PMHx_none.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ PMHx_CHF) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-PMHx_CHF.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ PMHx_ESRD) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-PMHx_ESRD.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ PMHx_Cr2) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-PMHx_Cr2.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ PMHx_PPMICDCRT) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-PMHx_PPMICDCRT.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ PMHx_fibfl) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-PMHx_fibfl.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ inhospRx_BB) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-inhospRx_BB.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ inhospRx_ACEIARB) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-inhospRx_ACEIARB.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ inhospRx_MRA)
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-inhospRx_MRA.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ OH_ARNI)
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-OH_ARNI.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ covar_Kdisc) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-covar_Kdisc.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ covar_Crdisc) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-covar_Crdisc.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ OH_DISCBPSYST) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-OH_DISCBPSYST.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ OH_DISCHR) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-OH_DISCHR.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ population_total) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-population_total.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ distress_score) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-distress_score.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ followup) 
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-followup.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ DCtoContCare)
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-DCtoContCare.png)
+```{r, eval=FALSE}
+densityplot(imp_rf2, ~ zip_designation)
+```
+![](/mnt/workspace/rstudio_projects/data/imp_rf_diagnostics/dp-zip_designation.png)
+<br> 
+The density plots seem reasonable, and this marks the completion of the imputation step of multiple imputation. 
+
+# Model Buidling after Multiple Imputation: the Fitting Step
+
+## Data Preparation 
+Data transformation is often necessary prior to fitting models. Some transformations should be performed prior to multiple imputation, but linear transformations generally can be performed after the fact. The timing of and various approaches to data transformation with respect to multiple imputation are discussed at length in van Buuren's book in Chapter 6.4. For example, if we wanted to apply a logarithmic transformation to a variable (such as serum creatinine), this should be performed prior to multiple imputation. However, tasks such as grand mean centering (to ease interpretation of the intercept) can be performed afterwards. In the following code, we grand-mean center some continuous variables, convert distress scores to quintiles, and convert some continuous variables to more clinically-iterpretable binary variables. Note that the conversion of continuous variables to categorical/factor variables follows a method called "impute then transform", which may introduce some bias into our final estimates but is better than performing such a conversion prior to imputation. 
+
+```{r, eval=FALSE}
+long <- mice::complete(imp_rf2, "long", include=TRUE)
+```
+
+When preparing to transform data, imputed datasets need to be converted to a single dataset. During multiple imputation we have actually created "m" datasets. Prior to transformation, these datasets are appended together to create a long data set of N*m observations (so in our case 30x136,144 observations). After we have converted to a long format, we can perform our transformations 
+
+```{r, eval=FALSE}
+#grand mean center ejection fraction, age, discharge serum creatinine, and total population within a zip code
+gm_EF = mean(long$OH_EF, na.rm=TRUE)
+long$EF_GMrescale = long$OH_EF - gm_EF
+
+gm_age = mean(long$AGEi, na.rm=TRUE)
+long$age_GMrescale = long$AGEi - gm_age
+
+gm_Cr = mean(long$covar_Crdisc, na.rm=TRUE)
+long$Crdisc_GMrescale = long$covar_Crdisc - gm_Cr
+
+gm_poptotal = mean(long$population_total, na.rm=TRUE)
+long$poptotal_GMrescale = long$population_total - gm_poptotal
+
+#clean up memory
+rm(gm_EF, gm_age, gm_Cr, gm_poptotal)
+
+#covert distress scores to quintiles 
+long <- long %>% 
+        mutate(DCI_quint=ifelse(distress_score < 20, 1, 
+                         ifelse(distress_score >= 20 & distress_score < 40, 2, 
+                         ifelse(distress_score >= 40 & distress_score < 60, 3, 
+                         ifelse(distress_score >= 60 & distress_score < 80, 4, 
+                         ifelse(distress_score >= 80, 5, 999))))))
+long$DCI_quint <- factor(long$DCI_quint, 
+                         levels=c(1,2,3,4,5), 
+                         labels=c('prosperous', 'comfortable', 'midtier', 
+                                  'atrisk', 'distressed'))
+
+#convert blood pressure, heart rate, and potassium to more meaningful clinical variables (systolic BP < 90, HR < 60, K >= 5)
+long <- long %>% 
+        mutate(sBP90=ifelse(OH_DISCBPSYST < 90, 1, 0))
+long$sBP90 <- as.factor(long$sBP90)
+
+long <- long %>% 
+        mutate(HR60=ifelse(OH_DISCHR < 60, 1, 0))
+long$HR60 <- as.factor(long$HR60)
+
+long <- long %>% 
+        mutate(K5=ifelse(covar_Kdisc >= 5, 1, 0))
+long$K5 <- as.factor(long$K5)
+
+
+#convert the long data sets back into individual impuated datasets 
+imprf2_GMC <- as.mids(long)
+```
+
+The last line of code as.mids() breaks up the long dataset back into individual imputed datasets and stores these datasets in a mids object.
+
+## Run the Fit Step in Parallel
+
+All necessary data manipulation has been completed, so the next step is the model fitting phase. In this phase, we fit the model of interest (going forward referred to as the hypothesis model) to each of the imputed datasets. In our case, this translates to 30 models. Our hypothesis model is a mixed effects logistic regression model, with the cluster variable assigned a random intercept. The first step in building mixed effects models is to ensure that the random effect component is even necessary. This can be done by calculating the intraclass correlation coefficient (ICC) for the unconditional mean (aka empty) model. 
+<br> 
+When constructing this model, the first issue that comes to mind is how to apply an empty model to a MIDS object, which actually contains 30 datasets. Our particular case is straight forward- we can use any of the data sets or even the original one because neither the outcome (GDMT_ARNI) nor the cluster variable (SITE_ID) have any missing data. Hence all 31 datasets (original + imputed datsets) are identical for the purpose of building an empty model. If there is missingness in the cluster variable, you would have to fit an unconditional mean model to each dataset, pool each of these models (this pooling step is straight forward in mice() and will be demonstrated in a later section), and use the pooled model to calculate an ICC. 
+
+
+```{r, eval=FALSE}
+m0 <- glmer(GDMT_ARNI ~ (1|SITE_ID), 
+            data=mice::complete(imprf2_GMC,2), 
+            family='binomial', 
+            control=glmerControl(optimizer='bobyqa', 
+                                 optCtrl=list(maxfun=2e5), 
+                                 calc.derivs=TRUE))
+ICC <- m0@theta[1]^2/(m0@theta[1]^2 + (3.14159^2/3))
+print(ICC)
+rm(m0, ICC)
+```
+
+The code above sets up an unconditional mean model and subsequently calculates the intraclass correlation coefficient. In the glmer() function, we use the argument data=mice::complete(mids-name, int) to demonstrate how a specific dataset can be extracted from the mids object imprf2_GMC. Our code uses imputation dataset #2, but in our case, int could have taken on any value between [1,30] because both GDMT_ARNI and SITE_ID have no missing values. We will apply this technique in the next block of code. In any case, the ICC in our case was 0.254, which indicates a random effects model is necessary. 
+<br> 
+Now we are ready to fit our model, but significant time would be required to run 30 of these complex explanatory models on each of the imputed datasets if we run in each model in serial (in our case, estimated run time was 120+ hours). Luckily, each model is estimated independently of the others, so the task can be paralleled to save time. 
+<br> 
+Putting a task into parallel can be daunting at first, and the resources we found helpful are in the "Helpful Resources" subsection earlier in this document. Being familiar with the R function 'lapply' is a must, as the function we use, 'parlapply', is essentially 'lapply' split over multiple cores. 
+<br> 
+Just as in 'lapply', we start by defining the function we need to iterate over, which in the case of model fitting, is your hypothesis model.  
+
+```{r, eval=FALSE}
+mids = imprf2_GMC
+
+f <- function(i) {
+  
+  data.i <- complete(mids,i)
+  
+  fits <- glmer(GDMT_ARNI ~ GDMT_HFBB + GDMT_ACEIARB + GDMT_MRA +
+          GDMT_RAASIcontra + inhospRx_ARNI + OH_ARNI +
+          relevel(race2i, ref="White") + relevel(insurance, ref="Other") +
+          age_GMrescale + GENDERi +
+          PMHx_none + PMHx_CHF + PMHx_Cr2 + PMHx_ESRD +
+          GH_HEART_TRANSPLANTS + RESIDENTS +
+          EF_GMrescale + OH_TRANSPLANT +
+          covar_ino +
+          K5 + Crdisc_GMrescale +
+          sBP90 + HR60 +
+          relevel(zip_designation, ref="Urban") +
+          relevel(DCI_quint, ref="prosperous") +
+          followup + DCtoContCare +
+          (1 | SITE_ID),
+        family='binomial', data = data.i,
+        control=glmerControl(optimizer='bobyqa', optCtrl=list(maxfun=2e5), calc.derivs=TRUE))
+  
+  return(fits)
+}
+```
+
+Next we have to prepare the group of cores over which we are going to parallel our task. This group of cores is referred to as a cluster, and each core in the cluster is a node. Each node essentially starts up its own fresh version of R that doesn't have any libraries or data loaded into it; hence, we need to load the libraries and data that our function depends on into each node. This is done through clusterEvalQ(), which is used to export libraries and clusterExport(), which is used to export objects. The next block of code sets up the cluster 'cl' with 30 nodes and then exports the essential libraries and objects to each node.
+
+```{r, eval=FALSE}
+#initiate a cluster using 30 cores. Cluster type is "FORK"
+n.core = 30
+iter = imp_rf2$m
+
+cl <- makeCluster(n.core, type="FORK")
+
+parallel::clusterEvalQ(cl, library(lme4))
+parallel::clusterExport(cl, varlist="mids", envir=environment())
+```
+
+We now run the fitting step, with each node running 1 model. parLapply returns the object 'fit', which is a list of length 30 with each element of the list containing a model. The stopCluster() function is very important- it tells the machine to terminate all those R instances we set up previously; forgetting to do this will cause cores to run unnecessarily in the background.
+
+```{r, eval=FALSE}
+fit <- parLapply(cl, 1:iter, f)
+
+parallel::stopCluster(cl)
+
+rm(n.core, iter, cl)
+```
+
+We now have all our models in the list 'fit', but to use the rest of mice()'s built-in commands we have to convert this into an object that mice will recognize, which is a 'mira' object. We create a 'mira' object using the code below and call it 'object'.
+
+```{r, eval=FALSE}
+#assemble a mira object 
+object <- list(call=match.call(), call1=imprf2_GMC$call, nmis=imprf2_GMC$nmis, analyses=fit)
+oldClass(object) <- c("mira", "matrix")
+object
+```
+
+# Pool the Results and Display the Output
+
+We now have a mira object containing 30 models fit to our 30 imputed datasets. The next step is to pool the results into a single model. This can be done easily using the mice::pool() function, which will create a 'mipo' object. The output of a mipo object can be displayed in multiple ways. 
+
+```{r, eval=FALSE}
+pool <- pool(object)
+pool$pooled
+```
+
+The pool$pooled output is useful because it displays relative increase in variance (riv), lambda, and fraction of missing information (FMI), which are assessments of how missingness impacts the standard errors of the estimates. Chapter 10 of Applied Missing Data Analysis with SPSS and (R)Studio by Heymans & Eekhout does an excellent job of explaining how these values are interpreted. 
+
+![](/mnt/workspace/rstudio_projects/console_scrn_shots/scrnsht_pool.png)
+<br>
+```{r, eval=FALSE}
+result <- summary(pool)
+print(result)
+```
+
+Using mice::summary() on a mipo object will print a standard regression table, though one should consider including at least one measure of missing data information (riv, lambda, fmi) when presenting results derived from imputed data. Also for explanatory modeling, consider using e-values rather than or in addition to p-values. E-values better help address robustness against missing variable bias. See VanderWeele, TJ & Ding P. "Sensitivity Analysis in Observational Research: Introducing the E-Value". Ann Intern Med. 2017. PMID 28693043. for further information.
+
+![](/mnt/workspace/rstudio_projects/console_scrn_shots/scrnsht_result.png)
+<br>
+Finally, clinically-oriented audiences may prefer to see effect estimates and confidence intervals given as odds ratios. This can be done via the following: 
+
+```{r, eval=FALSE}
+table <- cbind(Var=result$term, 
+               Est=exp(result$estimate), 
+               SE=exp(result$std.error), 
+               LL=exp(result$estimate - 1.96*result$std.error),
+               UL=exp(result$estimate + 1.96*result$std.error),
+               p=result$p.value)
+
+table2 <- format(round(table,3), nsmall=3)
+result$term
+```
+
+![](/mnt/workspace/rstudio_projects/console_scrn_shots/scrnsht_table2.png)
+<br>
+
+# Sensitivity Analysis 
+
+Reviewers may request to see a complete case (aka listwise deletion) analysis to compare with the model fitted to data that has undergone multiple imputation. Below is the code we used to generate this model. Complete case analysis is the default method used by glmer to handle missing data, so no data preparation is required outside of basic data transformations. 
+
+```{r, eval=FALSE}
+#data transformation for compelte case analysis 
+df <- df %>% 
+        mutate(DCI_quint=ifelse(distress_score < 20, 1, 
+                         ifelse(distress_score >= 20 & distress_score < 40, 2, 
+                         ifelse(distress_score >= 40 & distress_score < 60, 3, 
+                         ifelse(distress_score >= 60 & distress_score < 80, 4, 
+                         ifelse(distress_score >= 80, 5, 999))))))
+df$DCI_quint <- factor(df$DCI_quint, 
+                         levels=c(1,2,3,4,5), 
+                         labels=c('prosperous', 'comfortable', 'midtier', 
+                                  'atrisk', 'distressed'))
+
+df <- df %>% 
+        mutate(sBP90=ifelse(OH_DISCBPSYST < 90, 1, 0))
+df$sBP90 <- as.factor(df$sBP90)
+
+df <- df %>% 
+        mutate(HR60=ifelse(OH_DISCHR < 60, 1, 0))
+df$HR60 <- as.factor(df$HR60)
+
+df <- df %>% 
+        mutate(K5=ifelse(covar_Kdisc >= 5, 1, 0))
+df$K5 <- as.factor(df$K5)
+
+gm_age = mean(df$AGEi, na.rm=TRUE)
+df$age_GMrescale = df$AGEi - gm_age
+
+gm_EF = mean(df$OH_EF, na.rm=TRUE)
+df$EF_GMrescale = df$OH_EF - gm_EF
+
+gm_Cr = mean(df$covar_Crdisc, na.rm=TRUE)
+df$Crdisc_GMrescale = df$covar_Crdisc - gm_Cr
+
+rm(gm_age, gm_EF, gm_Cr)
+
+#sensitivity analysis: run the model using complete case analysis 
+cc_analysis <-  glmer(GDMT_ARNI ~ GDMT_HFBB + GDMT_ACEIARB + GDMT_MRA +
+                      GDMT_RAASIcontra + inhospRx_ARNI + OH_ARNI +
+                      relevel(race2i, ref="White") + relevel(insurance, ref="Other") +
+                      age_GMrescale + GENDERi +
+                      PMHx_none + PMHx_CHF + PMHx_Cr2 + PMHx_ESRD +
+                      GH_HEART_TRANSPLANTS + RESIDENTS +
+                      EF_GMrescale + OH_TRANSPLANT +
+                      covar_ino +
+                      K5 + Crdisc_GMrescale +
+                      sBP90 + HR60 +
+                      relevel(zip_designation, ref="Urban") +
+                      relevel(DCI_quint, ref="prosperous") +
+                      followup + DCtoContCare +
+                      (1 | SITE_ID),
+                family='binomial', data = df, verbose=2,
+                control=glmerControl(optimizer='bobyqa', 
+                                     optCtrl=list(maxfun=2e5), 
+                                     calc.derivs=TRUE))
+
+#create results tables for complete case analysis 
+summary(cc_analysis)
+se <- sqrt(diag(vcov(cc_analysis)))
+cc_analysis_table <- cbind(Est = fixef(cc_analysis), LL = fixef(cc_analysis) - 1.96*se, UL = fixef(cc_analysis) + 1.96* se)
+exp(cc_analysis_table)
+cc_analysis_table_rounded <- format(round(exp(cc_analysis_table),3), nsmall=3)
+cc_analysis_table_rounded
+```
+
+![](/mnt/workspace/rstudio_projects/console_scrn_shots/scrnsht_cc_analysis.png)
+
+![](/mnt/workspace/rstudio_projects/console_scrn_shots/scrnsht_cc_analysis-rounded.png)
+<br>
+
+# Final Thoughts 
+
+Multiple imputation provides a powerful and unbiased method of handling missing data so that data can be used to the fullest extent possible. However, there is a trade off- the uncertainty surrounding the true value of missing data manifests as increased standard errors. As a result, for effect estimates with p-values > 0.05, it may be that the result is truly due to random chance ("insignificant") or that confidence intervals have been widened by uncertainty about the true value of missing data.
+That being said, we believe that multiple imputation is an excellent solution to handling missing data and will hopefully become increasingly wide spread as large retrospective datasets mature and the medical community gains a better understanding of how these data can be applied to clinical practice. 
+And again, if you believe that we have made an egregious error or if there is simply a better way of doing things, please reach out to us! We are always looking for ways to improve and get closer to the truth! 
+
+Thanks all for making it to the end! 
+Jeff
+
